@@ -1,5 +1,6 @@
 #include "mem_swap.h"
 #include "mapper.h"
+#include "file_ops.h"
 #include <linux/swapfile.h>
 
 extern void end_swap_bio_read(struct bio *bio, int err);
@@ -24,7 +25,7 @@ static int init = 0;
 struct dump_args *dump_args;
 
 unsigned long memswap_size_total = (1<<20); /*# of pages*/
-unsigned long memswap_size = (1<<15); /*# of pages*/
+unsigned long memswap_size = (1<<16); /*# of pages*/
 
 /*
 * each memswap area consists of one or more chunks
@@ -68,10 +69,10 @@ int memswap_init(struct swap_info_struct *sis){
 	*(unsigned long *)Nahanni_mem = offset;
 	
 	sis->shm = start;
-	sis->shm_start = sis->shm_end = 0;
-	sis->disk_start = 0; 
-	sis->disk_end = 0;
+	sis->shm_start = sis->shm_end = 1;
+	sis->disk_start = sis->disk_end = 1; 
 	sis->mask = 1;
+	sis->is_dump = 0;
 
 	gsis = sis;
 	
@@ -155,7 +156,8 @@ int dump_shm_should_run(void){
 int swap_should_run(void){
 	//return shm_is_not_full();
 	//dump_thread_running == 0;
-	return gsis->disk_start == gsis->disk_end;
+	//return gsis->disk_start == gsis->disk_end;
+	return (gsis->is_dump == 0);
 }
 
 int mempipe_dump_shm(void *args)
@@ -166,7 +168,11 @@ int mempipe_dump_shm(void *args)
 	struct bio *bio;
 	struct page *page;
 	int ret = 0;
-
+	struct file *swap_dev;
+	
+	char *data;
+	unsigned long pos, size;
+	unsigned long write_ret, sync_ret;
 
 	while(!kthread_should_stop()) {
 		
@@ -179,10 +185,26 @@ int mempipe_dump_shm(void *args)
 		dump_thread_running = 1;
 		
 		/***/
-		sis->disk_start = sis->disk_end;
+		data = (char *)sis->shm + dump_args->start;
+		size = (dump_args->end - dump_args->start)*PAGE_SIZE;
+		pos = dump_args->start*PAGE_SIZE;
+
+		//swap_dev = file_open("/dev/mapper/ubuntu--vg-swap_1", O_DIRECT, O_RDWR);
+		swap_dev = file_open("/home/test",O_SYNC | O_CREAT | O_WRONLY, 0777);
+		printk(KERN_CRIT "open swap file %p\n", swap_dev);
+		if(swap_dev){
+			write_ret = file_write(swap_dev, pos, data, size);
+			printk(KERN_CRIT "write %ld bytes from offset %ld\n", write_ret, pos);
+			//sync_ret = file_sync(swap_dev);
+			//printk(KERN_CRIT "sync_ret = %ld\n", sync_ret);
+			file_close(swap_dev);
+		}
+		sis->disk_start = dump_args->end;
 		dump_thread_running = 0;
+		gsis->is_dump = 0;
 		wake_up_all(&swap_thread_wait);
 		printk("finish shm_dump, wake up swap thread\n");
+		//set_current_state(TASK_INTERRUPTIBLE);
 		schedule();
 		/***/
 
@@ -342,22 +364,28 @@ void (*end_write_func)(struct bio *, int))
         }
 
 	if(current == mempipe_dump_shm_thread) {
-		printk("********** goto shmem\n");
+		//printk("********** goto shmem\n");
                 goto shmem;
         }
 
-	if((dump_thread_running == 0) && dump_shm_should_run()){
-		printk("**********need shm_dump, dump_args = %p\n", dump_args);
-		//dump_args->start = sis->shm_start;
-		//dump_args->end = sis->shm_end;
-		dump_args->start = sis->disk_start;
-		dump_args->end = sis->disk_end;
-		printk("shm_start = %ld, shm_end = %ld, wake up shm_dump\n", dump_args->start, dump_args->end);
-		wake_up_interruptible(&dump_thread_wait);
-		printk("swap_writepage wait\n");
+	if(gsis->is_dump == 1){
+		printk("wait, shm_dump is runing\n");
 		wait_event_interruptible(swap_thread_wait, swap_should_run());
-		printk("swap_writepage resume, shm_start = %ld, shm_end = %ld\n", sis->disk_start, sis->disk_end);
-	}	
+	}else{
+		if(dump_shm_should_run()){
+			printk("**********need shm_dump, dump_args = %p\n", dump_args);
+			//dump_args->start = sis->shm_start;
+			//dump_args->end = sis->shm_end;
+			dump_args->start = sis->disk_start;
+			dump_args->end = sis->disk_end;
+			printk("shm_start = %ld, shm_end = %ld, wake up shm_dump\n", dump_args->start, dump_args->end);
+			wake_up_interruptible(&dump_thread_wait);
+			printk("swap_writepage wait\n");
+			gsis->is_dump = 1;
+			wait_event_interruptible(swap_thread_wait, swap_should_run());
+			printk("%ld, swap_writepage resume, shm_start = %ld, shm_end = %ld\n", current->pid, sis->disk_start, sis->disk_end);
+		}
+	}
 	
 	/*	
 	if(!swap_should_run()){
@@ -377,7 +405,7 @@ shmem:
         unlock_page(page);
         //end_page_writeback(page);
 	if(offset > sis->shm_end) {
-		sis->shm_end = ++offset;
+		sis->shm_end = offset;
 		sis->disk_end = sis->shm_end;
 	}
 

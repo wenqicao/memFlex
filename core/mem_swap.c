@@ -190,7 +190,7 @@ int mempipe_dump_shm(void *args)
 		pos = dump_args->start*PAGE_SIZE;
 
 		//swap_dev = file_open("/dev/mapper/ubuntu--vg-swap_1", O_DIRECT, O_RDWR);
-		swap_dev = file_open("/home/test",O_SYNC | O_CREAT | O_WRONLY, 0777);
+		swap_dev = file_open("/home/test", O_SYNC | O_CREAT | O_WRONLY, 0777);
 		printk(KERN_CRIT "open swap file %p\n", swap_dev);
 		if(swap_dev){
 			write_ret = file_write(swap_dev, pos, data, size);

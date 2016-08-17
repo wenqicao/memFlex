@@ -2,44 +2,45 @@
 #include "mapper.h"
 #include "file_ops.h"
 #include <linux/swapfile.h>
-#include <linux/preempt.h>
 
 extern void end_swap_bio_read(struct bio *bio, int err);
-
 #define SHM_DUMP
 #define PROACTIVE_SWAP
-
-/*OFFSET_1 and OFFSET_2 are used to store the swap-in meta data*/
 #define OFFSET_1 1048576 //4G from the start of the shm
 #define OFFSET_2 1310720 //5G from the start of the shm
-
 #define DUMP_PERCENT 0.7
+#define SWAP_FILE "/home/test"
 
 extern void __iomem * Nahanni_mem;
 extern spinlock_t swap_lock;
 static struct swap_info_struct *gsis;
 static unsigned long pages_to_dump, pages_dumped;
-
-
 static DECLARE_WAIT_QUEUE_HEAD(dump_thread_wait);
 static DECLARE_WAIT_QUEUE_HEAD(swap_thread_wait);
-static DECLARE_WAIT_QUEUE_HEAD(IO_thread_wait);
+struct task_struct *mempipe_dump_shm_thread;
+
+static int all_pages_dumped = 1;
+static int dump_thread_running = 0;
 
 static int init = 0;
-
 struct dump_args *dump_args;
 
 unsigned long memswap_size_total = (1<<21); /*# of pages*/
-unsigned long memswap_size = (1<<16); /*# of pages*/
+unsigned long memswap_size = (1<<18); /*# of pages*/
 
-struct task_struct *mempipe_dump_shm_thread;
+/*
+* each memswap area consists of one or more chunks
+* each chunk size is @memswap_size
+*/
+
+size_t init_chunks = 8;
 
 int memswap_init(struct swap_info_struct *sis){
-	/*Offset of the first free shm chunk, in terms of pages. This meta data is the first "long of the whole shm area*/
-	unsigned long offset;
-	char *start;
+	
 	int ret = 0;
-
+	unsigned long offset;/*In terms of pages*/
+	char *start;
+	
 	if(Nahanni_mem == NULL){
 		printk(KERN_ERR "Nahanni_mem = NULL\n");
 		return -1;
@@ -63,7 +64,7 @@ int memswap_init(struct swap_info_struct *sis){
 	printk("%s, offset = %ld\n", __func__, offset);
 
 	start = (char *)Nahanni_mem + offset*PAGE_SIZE;
-	memset((char *)start, '0', memswap_size*PAGE_SIZE);
+	memset((char *)start, '0', memswap_size*PAGE_SIZE);	
 
 	offset += memswap_size_total;
 	*(unsigned long *)Nahanni_mem = offset;
@@ -73,8 +74,6 @@ int memswap_init(struct swap_info_struct *sis){
 	sis->disk_start = sis->disk_end = 1; 
 	sis->mask = 1;
 	sis->is_dump = 0;
-	sis->swap_IO_finish = 1;
-	sis->dump_thread_should_run = 0;
 
 	gsis = sis;
 	
@@ -102,48 +101,25 @@ struct swapin_mdata* get_swapin_mdata(unsigned long offset)
 }
 
 int shm_almost_full(void){
+	//return ((gsis->shm_end - gsis->shm_start) >= memswap_size*DUMP_PERCENT);
 	return ((gsis->disk_end - gsis->disk_start) >= memswap_size*DUMP_PERCENT);
 }
 
-
-void end_dump_page(struct bio *bio, int err)
-{
-        const int uptodate = test_bit(BIO_UPTODATE, &bio->bi_flags);
-        struct page *page = bio->bi_io_vec[0].bv_page;
-
-        if(err)
-                printk(KERN_CRIT"~~~~~~~~~~~~~~~~~~~~~~~~err = %d\n", err);
-
-        if (!uptodate) {
-                SetPageError(page);
-                /*
-                 * We failed to write the page out to swap-space.
-                 * Re-dirty the page in order to avoid it being reclaimed.
-                 * Also print a dire warning that things will go BAD (tm)
-                 * very quickly.
-                 *
-                 * Also clear PG_reclaim to avoid rotate_reclaimable_page()
-                 */
-                set_page_dirty(page);
-                printk(KERN_ALERT "Write-error on swap-device (%u:%u:%Lu)\n",
-                                imajor(bio->bi_bdev->bd_inode),
-                                iminor(bio->bi_bdev->bd_inode),
-                                (unsigned long long)bio->bi_iter.bi_sector);
-                ClearPageReclaim(page);
-        }
-        end_page_writeback(page);
-        bio_put(bio);
-        __free_pages(page, 0);
-        pages_dumped++;
-
-        if(pages_dumped == pages_to_dump){
-		gsis->disk_start += pages_dumped;
-	        pages_dumped = pages_to_dump = 0;
-		gsis->swap_IO_finish = 1;
-                wake_up_all(&IO_thread_wait);
-        }
+int shm_is_not_full(void){
+	//return (gsis->shm_end - gsis->shm_start) < memswap_size;
+	return (gsis->disk_end - gsis->disk_start) < memswap_size;
 }
 
+int dump_shm_should_run(void){
+	return shm_almost_full();
+}
+
+int swap_should_run(void){
+	//return shm_is_not_full();
+	//dump_thread_running == 0;
+	//return gsis->disk_start == gsis->disk_end;
+	return (gsis->is_dump == 0);
+}
 
 int mempipe_dump_shm(void *args)
 {
@@ -153,56 +129,40 @@ int mempipe_dump_shm(void *args)
 	struct bio *bio;
 	struct page *page;
 	int ret = 0;
+	struct file *swap_dev;
+	
+	char *data;
+	unsigned long pos, size;
+	unsigned long write_ret, sync_ret;
 
 	while(!kthread_should_stop()) {
 		
 		if(kthread_should_stop())
 			break;
 	
-		wait_event_interruptible(dump_thread_wait, (gsis->dump_thread_should_run == 1));
-	
+		printk("prepare to start shm_dump\n");	
+		wait_event_interruptible(dump_thread_wait, dump_shm_should_run());
+		printk("start shm_dump\n");
+		dump_thread_running = 1;
+		
+		data = (char *)sis->shm + dump_args->start;
+		size = (dump_args->end - dump_args->start)*PAGE_SIZE;
+		pos = dump_args->start*PAGE_SIZE;
 
-		start = dump_args->start;
-                end = dump_args->end;
-                pages_to_dump = end - start;
-
-		gsis->swap_IO_finish = 0;
-
-                for(offset = start; offset < end; offset++) {
-                        page = alloc_pages(GFP_KERNEL, 0);
-                        if(!page)
-                                printk(KERN_CRIT "page allocation failed\n");
-
-                        lock_page(page);
-
-                        tmp_offset = offset;
-                        memcpy(page_address(page), (char *)Nahanni_mem + tmp_offset*PAGE_SIZE, PAGE_SIZE);
-
-                        bio = bio_alloc(GFP_NOIO, 1);
-                        if(bio) {
-                                bio->bi_iter.bi_sector = offset;
-                                bio->bi_iter.bi_sector <<= PAGE_SHIFT - 9;
-                                bio->bi_bdev = sis->bdev;
-                                bio->bi_io_vec[0].bv_page = page;
-                                bio->bi_io_vec[0].bv_len = PAGE_SIZE;
-                                bio->bi_io_vec[0].bv_offset = 0;
-                                bio->bi_vcnt = 1;
-                                bio->bi_iter.bi_size = PAGE_SIZE;
-                                bio->bi_end_io = end_dump_page;
-                        }else{
-                                printk(KERN_CRIT "ERRPR: bio is NULL, allocation failed\n");
-                                ret = -1;
-                        }
-
-                        set_page_writeback(page);
-                        unlock_page(page);
-                        submit_bio(WRITE, bio);
-                }
-
-		wait_event_interruptible(IO_thread_wait, (gsis->swap_IO_finish == 1));
-                gsis->is_dump = 0;
-                gsis->dump_thread_should_run = 0;
+		//swap_dev = file_open("/dev/mapper/ubuntu--vg-swap_1", O_DIRECT, O_RDWR);
+		swap_dev = file_open(SWAP_FILE, O_SYNC | O_CREAT | O_WRONLY, 0777);
+		printk(KERN_CRIT "open swap file %p\n", swap_dev);
+		if(swap_dev){
+			write_ret = file_write(swap_dev, pos, data, size);
+			printk(KERN_CRIT "write %ld bytes from offset %ld\n", write_ret, pos);
+			file_close(swap_dev);
+		}
+		sis->shm_start = sis->disk_start = dump_args->end;
+		dump_thread_running = 0;
+		gsis->is_dump = 0;
 		wake_up_all(&swap_thread_wait);
+		printk("finish shm_dump, wake up swap thread\n");
+		schedule();
 	}
 	return ret;
 }
@@ -310,22 +270,19 @@ void (*end_write_func)(struct bio *, int))
         }
 
 	if(gsis->is_dump == 1){
-		wait_event_interruptible(swap_thread_wait, (gsis->is_dump == 0));
+		printk("Pid %d wait, shm_dump is running\n", current->pid);
+		wait_event_interruptible(swap_thread_wait, swap_should_run());
 	}else{
-		if(shm_almost_full()){
+		if(dump_shm_should_run()){
+			printk("**********need shm_dump, dump_args = %p\n", dump_args);
 			dump_args->start = sis->disk_start;
 			dump_args->end = sis->disk_end;
-			
-			preempt_disable();
-			if(gsis->is_dump == 1){
-				wait_event_interruptible(swap_thread_wait, (gsis->is_dump = 0));
-			}else{
-				gsis->dump_thread_should_run = 1;
-				wake_up_interruptible(&dump_thread_wait);
-				gsis->is_dump = 1;
-				wait_event_interruptible(swap_thread_wait, (gsis->is_dump == 0));
-			}
-			preempt_enable();
+			printk("shm_start = %ld, shm_end = %ld, wake up shm_dump\n", dump_args->start, dump_args->end);
+			wake_up_interruptible(&dump_thread_wait);
+			printk("swap_writepage wait\n");
+			gsis->is_dump = 1;
+			wait_event_interruptible(swap_thread_wait, swap_should_run());
+			printk("%ld, swap_writepage resume, shm_start = %ld, shm_end = %ld\n", current->pid, sis->disk_start, sis->disk_end);
 		}
 	}
 	

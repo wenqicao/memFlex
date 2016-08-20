@@ -1,6 +1,6 @@
 <domain type='kvm' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>
-  <name>memflex_vm1</name>
-  <uuid>5760a80b-0884-5345-955e-c8d564ca7f83</uuid>
+  <name>memflex</name>
+  <uuid>5760a80b-0884-5345-955e-c8d564ca7f84</uuid>
   <memory unit='KiB'>1048576</memory>
   <currentMemory unit='KiB'>1048576</currentMemory>
   <vcpu placement='static'>1</vcpu>
@@ -24,7 +24,7 @@
     <emulator>/usr/bin/qemu-system-x86_64</emulator>
     <disk type='file' device='disk'>
       <driver name='qemu' type='raw'/>
-      <source file='/data/images/VM1-Ubuntu12.04.img'/>
+      <source file='/data/images/memflex.img'/>
       <target dev='vda' bus='virtio'/>
       <alias name='virtio-disk0'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x05' function='0x0'/>
@@ -37,7 +37,7 @@
       <alias name='pci.0'/>
     </controller>
     <interface type='network'>
-      <mac address='52:54:00:dd:67:8a'/>
+      <mac address='52:54:00:f9:d4:d4'/>
       <source network='default'/>
       <target dev='vnet0'/>
       <model type='virtio'/>
@@ -48,6 +48,10 @@
       <source path='/dev/pts/3'/>
       <target port='0'/>
       <alias name='serial0'/>
+    </serial>
+      <serial type='file'>
+      <source path='/tmp/memflex'/>
+      <target port='1'/>
     </serial>
     <console type='pty' tty='/dev/pts/3'>
       <source path='/dev/pts/3'/>
@@ -81,6 +85,7 @@
     <qemu:arg value='-chardev'/>
     <qemu:arg value='socket,path=/tmp/ivshmem_socket,id=foo'/>
     <qemu:arg value='-device'/>
-    <qemu:arg value='ivshmem,chardev=foo,size=128'/>
+    <qemu:arg value='ivshmem,chardev=foo,size=8192'/>
   </qemu:commandline>
 </domain>
+

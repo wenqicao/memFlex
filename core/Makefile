@@ -3,7 +3,7 @@
 # no need to list the source files explicitly.
 
 #uio_ivshmem_kvmloop-objs := kvmloop.o netutil.o shmem.o maptable.o uio_ivshmem.o mem_swap.o
-memflex-objs := uio_ivshmem.o mem_swap.o mapper.o file_ops.o bitmap.o
+memflex-objs := uio_ivshmem.o mem_swap.o mapper.o bitmap.o
 obj-m := memflex.o 
 
 # KDIR is the location of the kernel source.  The current standard is

@@ -1,7 +1,7 @@
 #include <linux/slab.h>
 #include "mapper.h"
 
-extern unsigned long memswap_size;
+extern unsigned long memswap_chunk;
 size_t cur, cap;
 
 unsigned long *init_mapper(size_t size){
@@ -48,11 +48,12 @@ int delete_mapper(unsigned long *mapper, unsigned long offset){
 }
 
 unsigned long get_offset(unsigned long *mapper, unsigned long voffset){
-	unsigned long idx = voffset/memswap_size;
-	unsigned long offset = voffset%memswap_size;
+	unsigned long idx = voffset/memswap_chunk;
+	unsigned long offset = voffset%memswap_chunk;
+
 	unsigned long start = *(mapper + idx);
 
-	return start + offset;	
+	return start*memswap_chunk + offset;	
 }
 
 int destroy_mapper(unsigned long *mapper){

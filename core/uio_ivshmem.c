@@ -13,6 +13,10 @@
 #define IntrStatus 0x04
 #define IntrMask 0x00
 
+char magic = 0x88;
+spinlock_t bitmap_lock;
+int meta_size = sizeof(magic) + sizeof(spinlock_t);
+
 extern unsigned long memswap_chunk;
 extern spinlock_t init_lock;
 
@@ -184,11 +188,20 @@ static int  ivshmem_pci_probe(struct pci_dev *dev, const struct pci_device_id *i
 	info->mem[1].size = pci_resource_len(dev, 2);
 	info->mem[1].memtype = UIO_MEM_PHYS;
 	
-	//Added by Qi
+	
 	Nahanni_mem = info->mem[1].internal_addr;
 	printk("Nahanni_mem = %p\n", Nahanni_mem);
-	clear_all_bits((char *)Nahanni_mem, PAGE_SIZE);
-	//end
+	bitmap_lock = *(spinlock_t *)((char *)Nahanni_mem + 1);
+	
+	/*Initialize the first page of Nahanni_mem*/
+	/*
+	*|magic(char)|spinlock_t|bitmap|pad| (Layout of the first page)
+	*/
+	if(*(char *)Nahanni_mem != magic){
+		*(char *)Nahanni_mem = magic;
+		spin_lock_init(&bitmap_lock);	
+		clear_all_bits((char *)Nahanni_mem + meta_size, (PAGE_SIZE - meta_size)*BITS_PER_BYTE);
+	}
 	
 	ivshmem_info->uio = info;
 	ivshmem_info->dev = dev;
@@ -295,6 +308,7 @@ static void __exit ivshmem_exit_module(void)
 
 	swap_unbind_hook();
 	pci_unregister_driver(&ivshmem_pci_driver);
+	*(char *)Nahanni_mem = 0x00;
 	DPRINTK("**********ivshmem exit***********\n\n\n\n\n\n\n");
 }
 

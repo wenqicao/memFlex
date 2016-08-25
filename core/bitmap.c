@@ -1,16 +1,14 @@
 #define BITS_PER_BYTE 8
-
+#include <linux/printk.h>
 /*
 *Starting from the first bit of @*p, set the @idx bit (to 1). 
 */
-void setbit(char *p, int idx){
-	int k1, k2;
-	char c;
+void setbit(char *p, unsigned long idx){
+	unsigned long k1, k2;
 
 	k1 = idx/(BITS_PER_BYTE*sizeof(char)); /*How many bytes*/
 	k2 = idx%(BITS_PER_BYTE*sizeof(char)); /*How many bits left*/
 
-	c = *(p + k1);
 	*(p + k1) |= 1<<k2;
 		
 }
@@ -18,9 +16,8 @@ void setbit(char *p, int idx){
 /*
 *Starting from the first bit of @*p, clear the @idx bit (to 0). 
 */
-void clearbit(char *p, int idx){
-	int k1, k2;
-        char c;
+void clearbit(char *p, unsigned long idx){
+	unsigned long k1, k2;
 
         k1 = idx/(BITS_PER_BYTE*sizeof(char)); /*How many bytes*/
         k2 = idx%(BITS_PER_BYTE*sizeof(char)); /*How many bits left*/
@@ -31,8 +28,8 @@ void clearbit(char *p, int idx){
 /*
 *Starting from the first bit of @*p, clear all the @width bits
 */
-void clear_all_bits(char *p, int width){
-	int i;
+void clear_all_bits(char *p, unsigned long width){
+	unsigned long i;
 
 	for(i = 0; i < width; i++){
 		clearbit(p, i);
@@ -45,8 +42,8 @@ void clear_all_bits(char *p, int width){
 *At most @width bits will be checked
 *Return the index of that bit
 */
-int first_zero_bit(char *p, int width){
-	int k1, k2, i, j, bit;
+int first_zero_bit(char *p, unsigned long width){
+	unsigned long k1, k2, i, j, bit;
 	char c;
 
 	k1 = width/(BITS_PER_BYTE*sizeof(char)); /*How many bytes*/

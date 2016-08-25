@@ -3,15 +3,18 @@
 #include <linux/pci.h>
 #include <linux/uio_driver.h>
 #include <asm/io.h>
+#include <linux/swapfile.h>
+#include <linux/spinlock.h>
 #include "mem_swap.h"
 #include "debug.h"
-#include <linux/swapfile.h>
+#include "bitmap.h"
 
 
 #define IntrStatus 0x04
 #define IntrMask 0x00
 
-extern unsigned long memswap_size;
+extern unsigned long memswap_chunk;
+extern spinlock_t init_lock;
 
 void __iomem *Nahanni_reg;
 void __iomem *Nahanni_mem;
@@ -160,6 +163,7 @@ static int  ivshmem_pci_probe(struct pci_dev *dev, const struct pci_device_id *i
 	//Added by Qi
 	Nahanni_reg = info->mem[0].internal_addr;
 	printk("Nahanni_reg = %p\n", Nahanni_reg);
+	spin_lock_init(&init_lock);
 	//end
 	info->mem[1].addr = pci_resource_start(dev, 2);
 	if (!info->mem[1].addr)
@@ -182,8 +186,8 @@ static int  ivshmem_pci_probe(struct pci_dev *dev, const struct pci_device_id *i
 	
 	//Added by Qi
 	Nahanni_mem = info->mem[1].internal_addr;
-	*(unsigned long *)Nahanni_mem = 0;
 	printk("Nahanni_mem = %p\n", Nahanni_mem);
+	clear_all_bits((char *)Nahanni_mem, PAGE_SIZE);
 	//end
 	
 	ivshmem_info->uio = info;
@@ -281,7 +285,8 @@ static int __init ivshmem_init_module(void)
 	ret = pci_register_driver(&ivshmem_pci_driver);
 	
 	swap_bind_hook(mempipe_swap_writepage, mempipe_swap_readpage, get_swapin_mdata);
-	set_memswap_init_size(memswap_size);/*# of pages*/
+	set_memswap_init_size(memswap_chunk);/*# of pages*/
+
 	return ret;
 }
 

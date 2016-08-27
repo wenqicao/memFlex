@@ -198,6 +198,7 @@ static int  ivshmem_pci_probe(struct pci_dev *dev, const struct pci_device_id *i
 	*|magic(char)|spinlock_t|bitmap|pad| (Layout of the first page)
 	*/
 	if(*(char *)Nahanni_mem != magic){
+		printk("~~~~~~~~~~~~~~Init first page of Nahanni_mem\n");
 		*(char *)Nahanni_mem = magic;
 		spin_lock_init(&bitmap_lock);	
 		clear_all_bits((char *)Nahanni_mem + meta_size, (PAGE_SIZE - meta_size)*BITS_PER_BYTE);

@@ -11,6 +11,7 @@
 extern void __iomem * Nahanni_mem;
 extern spinlock_t bitmap_lock;
 extern int meta_size;
+extern void switch_to_next_swap(void);
 
 static struct swap_info_struct *gsis;
 
@@ -19,10 +20,9 @@ spinlock_t init_lock;
 
 unsigned long shm_total = (1<<21); /*# of pages*/
 unsigned long memswap_total = 0; /*# of pages*/
-unsigned long memswap_chunk = (1<<17); /*# of pages*/
+unsigned long memswap_chunk = (1<<19); /*# of pages*/
 
 unsigned long chunk_num;
-
 
 /*
 * each memswap area consists of one or more chunks
@@ -42,7 +42,7 @@ int memswap_init(struct swap_info_struct *sis){
 	}
 	
 	/*For now, a shared memory swap partition consists of at most 8 sections*/
-	sis->mapper = init_mapper(64);
+	sis->mapper = init_mapper(8);
 
 	if(sis->mapper == NULL){
 		printk(KERN_ERR "sis->mapper initialization fails\n");
@@ -65,7 +65,7 @@ int memswap_init(struct swap_info_struct *sis){
 	}
 	spin_unlock(&bitmap_lock);
 
-	insert_mapper(sis->mapper, chunk_offset);
+	insert_mapper(&sis->mapper, chunk_offset);
 
 	sis->shm = p + PAGE_SIZE;
 	sis->shm_start = sis->shm_end = (unsigned long)(sis->shm + chunk_offset*memswap_chunk*PAGE_SIZE);
@@ -99,7 +99,11 @@ int add_memswap_chunk(void){
 	printk("add chunk, offset = %ld\n", chunk_offset);
 	spin_unlock(&bitmap_lock);
 	
-	insert_mapper(gsis->mapper, chunk_offset);
+	/*If the shared memory is full, switch to disk swap*/
+	if(chunk_offset == -1)
+		return -1;
+	
+	insert_mapper(&gsis->mapper, chunk_offset);
 	memswap_total += memswap_chunk;	
 	return 0;
 }
@@ -176,18 +180,13 @@ void (*end_write_func)(struct bio *, int))
         }
 #endif
 	shm_offset = get_offset(sis->mapper, offset);
-
-
+	
 	if(almost_full()){
-		add_memswap_chunk();
+		if(add_memswap_chunk() == -1){
+			switch_to_next_swap();
+		}
 	}
 
-	/*
-	int u = (int)(*(char *)Nahanni_mem&0xff);
-	if(u != 1){
-		printk("u = %d, offset = %ld\n", u, offset);
-	}
-	*/
 	memcpy((char *)sis->shm + shm_offset*PAGE_SIZE, (char *)kmap(page), PAGE_SIZE);
 	kunmap(page);
         unlock_page(page);

@@ -15,6 +15,7 @@ extern void switch_to_next_swap(void);
 
 static struct swap_info_struct *gsis;
 
+static int swap_switched = 0;
 static int init = 0;
 spinlock_t init_lock;
 
@@ -24,12 +25,12 @@ unsigned long memswap_chunk = (1<<19); /*# of pages*/
 
 unsigned long chunk_num;
 
+
+
 /*
 * each memswap area consists of one or more chunks
 * each chunk size is @memswap_size
 */
-
-
 int memswap_init(struct swap_info_struct *sis){
 	
 	int ret = 0;
@@ -180,12 +181,25 @@ void (*end_write_func)(struct bio *, int))
         }
 #endif
 	shm_offset = get_offset(sis->mapper, offset);
-	
-	if(almost_full()){
-		if(add_memswap_chunk() == -1){
+
+
+	if(swap_switched == 0){
+		if(gsis->disk_end - gsis->disk_start > ((1<<17)*1.5)){
 			switch_to_next_swap();
+			swap_switched = 1;
 		}
 	}
+
+	/*	
+	if(almost_full()){
+		if(swap_switched == 0){
+			if(add_memswap_chunk() == -1){
+				switch_to_next_swap();
+				swap_switched = 1;
+			}
+		}
+	}
+	*/
 
 	memcpy((char *)sis->shm + shm_offset*PAGE_SIZE, (char *)kmap(page), PAGE_SIZE);
 	kunmap(page);

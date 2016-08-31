@@ -6,7 +6,7 @@
 #define PROACTIVE_SWAP
 #define OFFSET_1 1048576 //4G from the start of the shm
 #define OFFSET_2 1310720 //5G from the start of the shm
-#define TH 0.7
+#define TH 0.95
 
 extern void __iomem * Nahanni_mem;
 extern spinlock_t bitmap_lock;
@@ -126,6 +126,7 @@ void (*end_write_func)(struct bio *, int))
         swp_entry_t entry;
 	char *mdata_exist;
 
+
         if (sis->flags & SWP_FILE) {
         	printk("Error: writepage to a FILE\n");
 	}
@@ -169,6 +170,9 @@ void (*end_write_func)(struct bio *, int))
                 pud = pud_offset(pgd, address);
                 pmd = pmd_offset(pud, address);
 
+		if(pmd == NULL)
+			goto free;
+	
                 mdata->vma = vma;
                 mdata->pmd = pmd;
                 mdata->address = address;
@@ -177,6 +181,7 @@ void (*end_write_func)(struct bio *, int))
                 *mdata_exist = '1';
                 memcpy((char *)sis->shm + OFFSET_2*PAGE_SIZE + offset*sizeof(struct swapin_mdata), (char *)mdata, sizeof(struct swapin_mdata));
 
+free:
                 kfree(mdata);
         }
 #endif
@@ -184,13 +189,13 @@ void (*end_write_func)(struct bio *, int))
 
 
 	if(swap_switched == 0){
-		if(gsis->disk_end - gsis->disk_start > ((1<<17)*1.5)){
+		if(gsis->disk_end - gsis->disk_start > ((1<<18))){
 			switch_to_next_swap();
 			swap_switched = 1;
 		}
 	}
 
-	/*	
+	/*
 	if(almost_full()){
 		if(swap_switched == 0){
 			if(add_memswap_chunk() == -1){

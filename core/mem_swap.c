@@ -3,7 +3,7 @@
 #include "bitmap.h"
 #include <linux/swapfile.h>
 
-#define PROACTIVE_SWAP
+//#define PROACTIVE_SWAP
 #define OFFSET_1 1048576 //4G from the start of the shm
 #define OFFSET_2 1310720 //5G from the start of the shm
 #define TH 0.95
@@ -21,7 +21,7 @@ spinlock_t init_lock;
 
 unsigned long shm_total = (1<<21); /*# of pages*/
 unsigned long memswap_total = 0; /*# of pages*/
-unsigned long memswap_chunk = (1<<19); /*# of pages*/
+unsigned long memswap_chunk = (1<<20); /*# of pages*/
 
 unsigned long chunk_num;
 
@@ -166,10 +166,18 @@ void (*end_write_func)(struct bio *, int))
                 unsigned long address = page->rmap_addrs[0];
                 struct vm_area_struct *vma = page->rmap_vmas[0];
 
-                pgd = pgd_offset(vma->vm_mm, address);
-                pud = pud_offset(pgd, address);
-                pmd = pmd_offset(pud, address);
+		if(mdata == NULL)
+			goto skip;			
 
+                pgd = pgd_offset(vma->vm_mm, address);
+                if(pgd == NULL)
+			goto free;
+
+		pud = pud_offset(pgd, address);
+		if(pud == NULL)
+			goto free;
+
+                pmd = pmd_offset(pud, address);
 		if(pmd == NULL)
 			goto free;
 	
@@ -184,12 +192,13 @@ void (*end_write_func)(struct bio *, int))
 free:
                 kfree(mdata);
         }
+skip:
 #endif
 	shm_offset = get_offset(sis->mapper, offset);
 
 
 	if(swap_switched == 0){
-		if(gsis->disk_end - gsis->disk_start > ((1<<18))){
+		if(gsis->disk_end - gsis->disk_start > memswap_chunk){
 			switch_to_next_swap();
 			swap_switched = 1;
 		}

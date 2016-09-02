@@ -13,10 +13,11 @@
 #define IntrStatus 0x04
 #define IntrMask 0x00
 
-char magic = 0x88;
+char magic = 0x87;
 spinlock_t bitmap_lock;
 int meta_size = sizeof(magic) + sizeof(spinlock_t);
 
+extern void back_to_default_swap(void);
 extern unsigned long memswap_chunk;
 extern spinlock_t init_lock;
 
@@ -300,6 +301,7 @@ static int __init ivshmem_init_module(void)
 	
 	swap_bind_hook(mempipe_swap_writepage, mempipe_swap_readpage, get_swapin_mdata);
 	set_memswap_init_size(memswap_chunk);/*# of pages*/
+	DPRINTK("*****************ivshmem init****************\n");
 
 	return ret;
 }
@@ -310,6 +312,7 @@ static void __exit ivshmem_exit_module(void)
 	swap_unbind_hook();
 	pci_unregister_driver(&ivshmem_pci_driver);
 	*(char *)Nahanni_mem = 0x00;
+	back_to_default_swap();
 	DPRINTK("**********ivshmem exit***********\n\n\n\n\n\n\n");
 }
 

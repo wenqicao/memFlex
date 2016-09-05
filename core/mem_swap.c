@@ -25,6 +25,7 @@ unsigned long memswap_chunk = (1<<20); /*# of pages*/
 
 unsigned long chunk_num;
 
+//struct task_struct *swapin_thread;
 
 
 /*
@@ -74,6 +75,7 @@ int memswap_init(struct swap_info_struct *sis){
 
 	gsis = sis;
 	
+	//swapin_thread = kthread_run(mempipe_swapin, NULL, "mempipe_swapin");
 
 	return ret;
 }
@@ -89,6 +91,25 @@ struct swapin_mdata* get_swapin_mdata(unsigned long offset)
 	}
 
 }
+
+/*
+void mempipe_swapin(){
+	while(!kthread_should_stop()){
+		struct sysinfo i;
+
+		if(kthread_should_stop()){
+			break;	
+		}
+				
+		sleep(5);
+		si_meminfo(&i);
+		if(si->freeram > ){
+			
+		}
+			
+	}
+}
+*/
 
 int add_memswap_chunk(void){
 	char *p = (char *)Nahanni_mem + meta_size;

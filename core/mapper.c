@@ -17,7 +17,7 @@ unsigned long *init_mapper(size_t size){
 	return mapper;
 }
 
-int insert_mapper(unsigned long *mapper, unsigned long offset){
+int insert_mapper(unsigned long **mapper, unsigned long offset){
 	size_t tmp_cap;
 	unsigned long *tmp_mapper;
 	
@@ -31,13 +31,13 @@ int insert_mapper(unsigned long *mapper, unsigned long offset){
 			return -1;
 		}	
 
-		memcpy(tmp_mapper, mapper, cap*sizeof(unsigned long));
-		kfree(mapper);
-		mapper = tmp_mapper;
+		memcpy(tmp_mapper, *mapper, cap*sizeof(unsigned long));
+		kfree(*mapper);
+		*mapper = tmp_mapper;
 		cap = tmp_cap;
 	}
 	
-	*(mapper + cur) = offset;
+	*(*mapper + cur) = offset;
 	cur++;
 
 	return 0;

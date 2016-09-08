@@ -20,6 +20,7 @@ int meta_size = sizeof(magic) + sizeof(spinlock_t);
 extern void back_to_default_swap(void);
 extern unsigned long memswap_chunk;
 extern spinlock_t init_lock;
+extern struct task_struct *swapin_thread;
 
 void __iomem *Nahanni_reg;
 void __iomem *Nahanni_mem;
@@ -313,6 +314,10 @@ static void __exit ivshmem_exit_module(void)
 	pci_unregister_driver(&ivshmem_pci_driver);
 	*(char *)Nahanni_mem = 0x00;
 	back_to_default_swap();
+	
+	if(swapin_thread != NULL)
+		kthread_stop(swapin_thread);
+	
 	DPRINTK("**********ivshmem exit***********\n\n\n\n\n\n\n");
 }
 

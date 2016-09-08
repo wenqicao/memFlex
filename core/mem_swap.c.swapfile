@@ -1,0 +1,368 @@
+#include "mem_swap.h"
+#include "mapper.h"
+#include "file_ops.h"
+#include <linux/swapfile.h>
+
+#define SHM_DUMP
+#define PROACTIVE_SWAP
+#define OFFSET_1 1048576 //4G from the start of the shm
+#define OFFSET_2 1310720 //5G from the start of the shm
+#define DUMP_PERCENT 0.7
+#define SWAP_FILE "/home/test"
+
+extern void __iomem * Nahanni_mem;
+extern spinlock_t swap_lock;
+static struct swap_info_struct *gsis;
+static unsigned long pages_to_dump, pages_dumped;
+struct task_struct *mempipe_dump_shm_thread;
+static DECLARE_WAIT_QUEUE_HEAD(dump_thread_wait);
+static DECLARE_WAIT_QUEUE_HEAD(swap_thread_wait);
+
+static int init = 0;
+spinlock_t init_lock;
+
+struct dump_args *dump_args;
+
+unsigned long memswap_size_total = (1<<21); /*# of pages*/
+unsigned long memswap_size = (1<<18); /*# of pages*/
+
+
+static int dump_start = 0;
+
+/*
+* each memswap area consists of one or more chunks
+* each chunk size is @memswap_size
+*/
+
+
+int memswap_init(struct swap_info_struct *sis){
+	
+	int ret = 0;
+	unsigned long offset;/*In terms of pages*/
+	char *start;
+	
+	if(Nahanni_mem == NULL){
+		printk(KERN_ERR "Nahanni_mem = NULL\n");
+		return -1;
+	}
+	
+	sis->mapper = init_mapper(8); /*For now, a shared memory swap partition consists of at most 8 sections*/
+
+	if(sis->mapper == NULL){
+		printk(KERN_ERR "sis->mapper initialization fails\n");
+		return -1;
+	}
+
+	offset = *(unsigned long *)Nahanni_mem;
+	
+	if(offset == 0){
+		offset = 1;
+	}
+
+	insert_mapper(sis->mapper, offset);
+
+	start = (char *)Nahanni_mem + offset*PAGE_SIZE;
+	memset((char *)start, '0', memswap_size*PAGE_SIZE);	
+
+	offset += memswap_size_total;
+	*(unsigned long *)Nahanni_mem = offset;
+	
+	sis->shm = start;
+	sis->shm_start = sis->shm_end = 0;
+	sis->disk_start = sis->disk_end = 0; 
+	sis->mask = 1;
+	sis->is_dump = 0;
+	sis->dump_thread_running = 0;
+	gsis = sis;
+	
+	pages_to_dump = pages_dumped = 0;
+
+
+	dump_args = (struct dump_args *)kmalloc(sizeof(struct dump_args), GFP_KERNEL);	
+	if(dump_args) {
+		dump_args->sis = sis;
+	}
+	mempipe_dump_shm_thread = kthread_run(mempipe_dump_shm, dump_args, "mempipe_dump");
+	printk("before init return, mapper = %p\n", sis->mapper);
+	return ret;
+}
+
+struct swapin_mdata* get_swapin_mdata(unsigned long offset)
+{
+	char *exist = (char *)gsis->shm + OFFSET_1*PAGE_SIZE + offset;
+	if(*exist == '0') {
+		return NULL;
+	}else{
+		struct swapin_mdata *mdata = (struct swapin_mdata *)((char *)gsis->shm + OFFSET_2*PAGE_SIZE + offset*sizeof(struct swapin_mdata));
+		return mdata;
+	}
+
+}
+
+int shm_almost_full(void){
+	//return ((gsis->shm_end - gsis->shm_start) >= memswap_size*DUMP_PERCENT);
+	return ((gsis->disk_end - gsis->disk_start) >= memswap_size*DUMP_PERCENT);
+}
+
+int shm_is_not_full(void){
+	//return (gsis->shm_end - gsis->shm_start) < memswap_size;
+	return (gsis->disk_end - gsis->disk_start) < memswap_size;
+}
+
+int dump_shm_should_run(void){
+	return shm_almost_full();
+}
+
+int swap_should_run(void){
+	//return shm_is_not_full();
+	//dump_thread_running == 0;
+	//return gsis->disk_start == gsis->disk_end;
+	return (gsis->is_dump == 0);
+}
+
+int mempipe_dump_shm(void *args)
+{
+	struct dump_args *dump_args = (struct dump_args *)args;
+	struct swap_info_struct *sis = dump_args->sis;
+	int ret = 0;
+	struct file *swap_dev;
+	
+	char *data;
+	unsigned long pos, size;
+	unsigned long write_ret;
+
+	while(!kthread_should_stop()) {
+		
+		if(kthread_should_stop())
+			break;
+	
+		printk("prepare to start shm_dump\n");	
+		wait_event_interruptible(dump_thread_wait, (dump_start == 1));
+		printk("start shm_dump\n");
+		gsis->dump_thread_running = 1;
+		
+		data = (char *)sis->shm + dump_args->start*PAGE_SIZE;
+		size = (dump_args->end - dump_args->start + 1)*PAGE_SIZE;
+		pos = dump_args->start*PAGE_SIZE;
+
+		//swap_dev = file_open("/dev/mapper/ubuntu--vg-swap_1", O_DIRECT, O_RDWR);
+		swap_dev = file_open(SWAP_FILE, O_DIRECT | O_SYNC | O_CREAT | O_WRONLY, 0777);
+		printk(KERN_CRIT "open swap file %p\n", swap_dev);
+		if(swap_dev){
+			write_ret = file_write(swap_dev, pos, data, size);
+			printk(KERN_CRIT "write %ld bytes from offset %ld\n", write_ret, pos);
+			file_close(swap_dev);
+		}
+		sis->disk_start = dump_args->end + 1;
+		sis->shm_start = dump_args->end + 1;
+		gsis->dump_thread_running = 0;
+		gsis->is_dump = 0;
+		dump_start = 0;
+		wake_up_all(&swap_thread_wait);
+		printk("finish shm_dump, wake up swap thread\n");
+		schedule();
+	}
+	return ret;
+}
+
+
+
+int mempipe_swap_writepage(struct page *page, struct writeback_control *wbc,
+void (*end_write_func)(struct bio *, int))
+{
+        int ret = 0;
+        struct swap_info_struct *sis = page_swap_info(page);
+	pgoff_t offset;
+        swp_entry_t entry;
+	char *mdata_exist;
+	struct file *swap_dev;
+	int write_ret;
+
+	printk("writepage pid = %ld, %s\n", (unsigned long)current->pid, current->comm);
+        if (sis->flags & SWP_FILE) {
+        	printk("Error: writepage to a FILE\n");
+	}
+
+	/*
+	if(init == 1){	
+		if(gsis->is_dump == 1){
+			printk("%ld writepage wait\n", (unsigned long)current->pid);
+			wait_event_interruptible(swap_thread_wait, swap_should_run());
+			printk("%ld writepage resume\n", (unsigned long)current->pid);
+		}
+	}
+	*/
+        entry.val = page_private(page);
+        offset = swp_offset(entry);
+
+	if(offset == 0){
+		printk("write page, offset = %ld, shm_start = %ld\n", offset, sis->shm_start);
+        }
+	if(init == 0){
+		spin_lock(&init_lock);
+		if(init == 0){
+			printk("start memswap_init()\n");
+			ret = memswap_init(sis); 
+			init = 1;
+		}
+		spin_unlock(&init_lock);
+	}
+
+	BUG_ON(sis->mapper == NULL);
+	
+	
+	if(current == mempipe_dump_shm_thread) {
+                goto shmem;
+        }
+
+#ifdef SHM_DUMP
+	if(offset < sis->shm_start && offset != 0){
+		printk("write to file, offset = %ld\n", offset);
+		swap_dev = file_open(SWAP_FILE, O_DIRECT | O_SYNC | O_CREAT | O_WRONLY, 0777);
+		if(swap_dev){
+			write_ret = file_write(swap_dev, offset*PAGE_SIZE, kmap(page), PAGE_SIZE);
+			kunmap(page);
+			file_close(swap_dev);
+		}
+               
+		unlock_page(page); 
+		goto out;
+        }
+
+	if(gsis->is_dump == 1){
+		wait_event_interruptible(swap_thread_wait, (gsis->is_dump == 0));
+	}else{
+		if(dump_shm_should_run()){
+			printk("**********need shm_dump, dump_args = %p\n", dump_args);
+			dump_args->start = sis->disk_start;
+			dump_args->end = sis->disk_end;
+			printk("shm_start = %ld, shm_end = %ld, wake up shm_dump\n", dump_args->start, dump_args->end);
+			dump_start = 1;
+			gsis->is_dump = 1;
+			wake_up_interruptible(&dump_thread_wait);
+			printk("swap_writepage wait\n");
+			wait_event_interruptible(swap_thread_wait, swap_should_run());
+			printk("%ld, swap_writepage resume, shm_start = %ld, shm_end = %ld\n", (unsigned long)current->pid, sis->disk_start, sis->disk_end);
+		}
+	}
+	
+#endif
+
+shmem:
+	/*The swap slot is in shared memory*/
+	count_vm_event(PSWPOUT);
+
+	mdata_exist = (char *)sis->shm + OFFSET_1*PAGE_SIZE + offset*sizeof(char);
+        *mdata_exist = '0';
+
+#ifdef PROACTIVE_SWAP
+        if(page->idx == 1) {
+                pgd_t *pgd;
+                pud_t *pud;
+                pmd_t *pmd;
+
+                struct swapin_mdata *mdata = (struct swapin_mdata*)kmalloc(sizeof(struct swapin_mdata), GFP_KERNEL);
+                unsigned long address = page->rmap_addrs[0];
+                struct vm_area_struct *vma = page->rmap_vmas[0];
+
+                pgd = pgd_offset(vma->vm_mm, address);
+                pud = pud_offset(pgd, address);
+                pmd = pmd_offset(pud, address);
+
+                mdata->vma = vma;
+                mdata->pmd = pmd;
+                mdata->address = address;
+
+
+                *mdata_exist = '1';
+                memcpy((char *)sis->shm + OFFSET_2*PAGE_SIZE + offset*sizeof(struct swapin_mdata), (char *)mdata, sizeof(struct swapin_mdata));
+
+                kfree(mdata);
+        }
+#endif
+
+	memcpy((char *)sis->shm + offset*PAGE_SIZE, (char *)kmap(page), PAGE_SIZE);
+	kunmap(page);
+        unlock_page(page);
+	if(offset > sis->shm_end) {
+		sis->shm_end = offset;
+		sis->disk_end = sis->shm_end;
+	}
+
+out:
+	return ret;
+}
+
+int mempipe_swap_readpage(struct page *page)
+{
+	int ret = 0;
+	struct swap_info_struct *sis = page_swap_info(page);
+	//Added by Qi
+	swp_entry_t entry;
+	pgoff_t offset;
+	struct file *swap_dev;
+	int read_ret;
+	//
+
+	printk("readpage pid = %ld, %s\n", (unsigned long)current->pid, current->comm);
+	BUG_ON(sis->shm == NULL);
+	/*
+	if(init == 1){
+		if(gsis->is_dump == 1){
+			printk("%ld readpage wait\n", (unsigned long)current->pid);
+			wait_event_interruptible(swap_thread_wait, swap_should_run());
+			printk("%ld readpage resume\n", (unsigned long)current->pid);
+		}
+	}	
+	*/
+	VM_BUG_ON_PAGE(!PageLocked(page), page);
+	VM_BUG_ON_PAGE(PageUptodate(page), page);
+	if (frontswap_load(page) == 0) {
+		SetPageUptodate(page);
+		unlock_page(page);
+		goto out;
+	}
+
+	if (sis->flags & SWP_FILE) {
+		printk("Error: readpage from swap file\n");
+	}
+
+	
+	
+	//Qi
+	entry.val = page_private(page);
+	offset = swp_offset(entry);
+
+#ifdef SHM_DUMP 
+	if(offset == 0){
+		printk("read page, offset = %ld, shm_start = %ld\n", offset, sis->shm_start);
+        }
+	
+	if(gsis->is_dump == 1){
+		wait_event_interruptible(swap_thread_wait, (gsis->is_dump == 0));
+	}
+	
+	if(offset < sis->shm_start) {
+		printk("read from file, offset = %ld\n", offset);
+		swap_dev = file_open(SWAP_FILE, O_DIRECT | O_SYNC | O_CREAT | O_WRONLY, 0777);
+		if(swap_dev){
+			read_ret = file_read(swap_dev, offset*PAGE_SIZE, kmap(page), PAGE_SIZE);
+			kunmap(page);
+			//read_ret = file_read(swap_dev, offset*PAGE_SIZE, (char *)page_to_virt(page), PAGE_SIZE);
+			file_close(swap_dev);
+		}
+                unlock_page(page);
+		goto out;
+        }
+#endif
+
+	count_vm_event(PSWPIN);
+	//offset = get_offset(sis->mapper, offset);
+	memcpy((char *)kmap(page), (char *)sis->shm + offset*PAGE_SIZE, PAGE_SIZE);
+	kunmap(page);
+	SetPageUptodate(page);
+	unlock_page(page);
+	
+out:
+	return ret;
+}

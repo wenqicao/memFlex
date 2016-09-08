@@ -1,9 +1,10 @@
 #include "mem_swap.h"
 #include "mapper.h"
 #include "bitmap.h"
+#include <linux/delay.h>
 #include <linux/swapfile.h>
 
-//#define PROACTIVE_SWAP
+#define PROACTIVE_SWAP
 #define OFFSET_1 1048576 //4G from the start of the shm
 #define OFFSET_2 1310720 //5G from the start of the shm
 #define TH 0.95
@@ -25,7 +26,8 @@ unsigned long memswap_chunk = (1<<20); /*# of pages*/
 
 unsigned long chunk_num;
 
-//struct task_struct *swapin_thread;
+struct task_struct *swapin_thread;
+int mempipe_swapin_thread(void *data);
 
 
 /*
@@ -75,7 +77,11 @@ int memswap_init(struct swap_info_struct *sis){
 
 	gsis = sis;
 	
-	//swapin_thread = kthread_run(mempipe_swapin, NULL, "mempipe_swapin");
+	swapin_thread = NULL;
+	//swapin_thread = kthread_run(mempipe_swapin_thread, NULL, "mempipe_swapin");
+	if(swapin_thread == NULL){
+		printk("create swapin thread failed\n");
+	}
 
 	return ret;
 }
@@ -92,8 +98,8 @@ struct swapin_mdata* get_swapin_mdata(unsigned long offset)
 
 }
 
-/*
-void mempipe_swapin(){
+
+int mempipe_swapin_thread(void *data){
 	while(!kthread_should_stop()){
 		struct sysinfo i;
 
@@ -101,15 +107,15 @@ void mempipe_swapin(){
 			break;	
 		}
 				
-		sleep(5);
+		msleep(500);
 		si_meminfo(&i);
-		if(si->freeram > ){
-			
-		}
-			
+		
+		if(gsis != NULL)
+			printk("pages used = %d, lowest bit = %d, highest bit = %d, next = %d, delta = %ld\n", gsis->inuse_pages, gsis->lowest_bit, gsis->highest_bit, gsis->cluster_next, gsis->disk_end - gsis->disk_start);	
 	}
+	
+	return 0;
 }
-*/
 
 int add_memswap_chunk(void){
 	char *p = (char *)Nahanni_mem + meta_size;
@@ -189,6 +195,9 @@ void (*end_write_func)(struct bio *, int))
 
 		if(mdata == NULL)
 			goto skip;			
+
+		if(vma == NULL)
+			goto free;
 
                 pgd = pgd_offset(vma->vm_mm, address);
                 if(pgd == NULL)

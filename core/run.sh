@@ -5,4 +5,4 @@ make
 modprobe uio
 insmod memflex.ko
 swapon /dev/vda5
-swapon /home/swapfile
+#swapon /home/swapfile

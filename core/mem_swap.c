@@ -14,6 +14,8 @@ extern spinlock_t bitmap_lock;
 extern int meta_size;
 extern void switch_to_next_swap(void);
 
+int entry_size = 4096 + sizeof(struct mdata);
+
 static struct swap_info_struct *gsis;
 
 static int swap_switched = 0;
@@ -71,8 +73,8 @@ int memswap_init(struct swap_info_struct *sis){
 
 	insert_mapper(&sis->mapper, chunk_offset);
 
-	sis->shm = p + PAGE_SIZE;
-	sis->shm_start = sis->shm_end = (unsigned long)(sis->shm + chunk_offset*memswap_chunk*PAGE_SIZE);
+	sis->shm = p + entry_size;
+	sis->shm_start = sis->shm_end = (unsigned long)(sis->shm + chunk_offset*memswap_chunk*entry_size);
         sis->disk_start = sis->disk_end = 0;
 
 	gsis = sis;
@@ -83,17 +85,18 @@ int memswap_init(struct swap_info_struct *sis){
 		printk("create swapin thread failed\n");
 	}
 
+	printk("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ entry_size = %d\n", entry_size);
+
 	return ret;
 }
 
 struct swapin_mdata* get_swapin_mdata(unsigned long offset)
 {
-	char *exist = (char *)gsis->shm + OFFSET_1*PAGE_SIZE + offset;
-	if(*exist == '0') {
+	struct mdata *m = (struct mdata *)((char *)gsis->shm + offset*entry_size + PAGE_SIZE);
+	if(m->exist == '0') {
 		return NULL;
 	}else{
-		struct swapin_mdata *mdata = (struct swapin_mdata *)((char *)gsis->shm + OFFSET_2*PAGE_SIZE + offset*sizeof(struct swapin_mdata));
-		return mdata;
+		return &m->sm;
 	}
 
 }
@@ -151,8 +154,7 @@ void (*end_write_func)(struct bio *, int))
 	pgoff_t offset;
 	unsigned long shm_offset;
         swp_entry_t entry;
-	char *mdata_exist;
-
+	struct mdata *m;
 
         if (sis->flags & SWP_FILE) {
         	printk("Error: writepage to a FILE\n");
@@ -180,8 +182,10 @@ void (*end_write_func)(struct bio *, int))
 	/*The swap slot is in shared memory*/
 	count_vm_event(PSWPOUT);
 
-	mdata_exist = (char *)sis->shm + OFFSET_1*PAGE_SIZE + offset*sizeof(char);
-        *mdata_exist = '0';
+	m = (struct mdata *)((char *)sis->shm + offset*entry_size + PAGE_SIZE);
+        m->exist = '0';
+	//mdata_exist = (char *)sis->shm + OFFSET_1*PAGE_SIZE + offset*sizeof(char);
+	//*mdata_exist = '0';
 
 #ifdef PROACTIVE_SWAP
         if(page->idx == 1) {
@@ -189,38 +193,30 @@ void (*end_write_func)(struct bio *, int))
                 pud_t *pud;
                 pmd_t *pmd;
 
-                struct swapin_mdata *mdata = (struct swapin_mdata*)kmalloc(sizeof(struct swapin_mdata), GFP_KERNEL);
+		
                 unsigned long address = page->rmap_addrs[0];
                 struct vm_area_struct *vma = page->rmap_vmas[0];
 
-		if(mdata == NULL)
-			goto skip;			
-
 		if(vma == NULL)
-			goto free;
+			goto skip;
 
                 pgd = pgd_offset(vma->vm_mm, address);
                 if(pgd == NULL)
-			goto free;
+			goto skip;
 
 		pud = pud_offset(pgd, address);
 		if(pud == NULL)
-			goto free;
+			goto skip;
 
                 pmd = pmd_offset(pud, address);
 		if(pmd == NULL)
-			goto free;
+			goto skip;
 	
-                mdata->vma = vma;
-                mdata->pmd = pmd;
-                mdata->address = address;
+               	m->sm.vma = vma;
+                m->sm.pmd = pmd;
+                m->sm.address = address;
 
-
-                *mdata_exist = '1';
-                memcpy((char *)sis->shm + OFFSET_2*PAGE_SIZE + offset*sizeof(struct swapin_mdata), (char *)mdata, sizeof(struct swapin_mdata));
-
-free:
-                kfree(mdata);
+		m->exist = '1';
         }
 skip:
 #endif
@@ -245,7 +241,7 @@ skip:
 	}
 	*/
 
-	memcpy((char *)sis->shm + shm_offset*PAGE_SIZE, (char *)kmap(page), PAGE_SIZE);
+	memcpy((char *)sis->shm + shm_offset*entry_size, (char *)kmap(page), PAGE_SIZE);
 	kunmap(page);
         unlock_page(page);
 	if(offset > sis->disk_end) {
@@ -282,7 +278,7 @@ int mempipe_swap_readpage(struct page *page)
 
 	count_vm_event(PSWPIN);
 	shm_offset = get_offset(sis->mapper, offset);
-	memcpy((char *)kmap(page), (char *)sis->shm + shm_offset*PAGE_SIZE, PAGE_SIZE);
+	memcpy((char *)kmap(page), (char *)sis->shm + shm_offset*entry_size, PAGE_SIZE);
 	kunmap(page);
 	SetPageUptodate(page);
 	unlock_page(page);

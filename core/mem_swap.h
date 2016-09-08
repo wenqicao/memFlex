@@ -26,8 +26,8 @@ struct dump_args{
 */
 
 struct mdata{
-	char *exist;
-	struct swapin_mdata *sm;
+	char exist;
+	struct swapin_mdata sm;
 };	
 
 int mempipe_swap_init(struct swap_info_struct *sis);

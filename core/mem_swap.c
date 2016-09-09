@@ -3,10 +3,9 @@
 #include "bitmap.h"
 #include <linux/delay.h>
 #include <linux/swapfile.h>
+#include <linux/kmod.h>
 
 #define PROACTIVE_SWAP
-#define OFFSET_1 1048576 //4G from the start of the shm
-#define OFFSET_2 1310720 //5G from the start of the shm
 #define TH 0.95
 
 extern void __iomem * Nahanni_mem;
@@ -30,7 +29,7 @@ unsigned long chunk_num;
 
 struct task_struct *swapin_thread;
 int mempipe_swapin_thread(void *data);
-
+int swap_mounted = 0;
 
 /*
 * each memswap area consists of one or more chunks
@@ -82,10 +81,8 @@ int memswap_init(struct swap_info_struct *sis){
 	swapin_thread = NULL;
 	//swapin_thread = kthread_run(mempipe_swapin_thread, NULL, "mempipe_swapin");
 	if(swapin_thread == NULL){
-		printk("create swapin thread failed\n");
+		printk("MemFlex error: create swapin thread failed\n");
 	}
-
-	printk("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ entry_size = %d\n", entry_size);
 
 	return ret;
 }
@@ -103,20 +100,32 @@ struct swapin_mdata* get_swapin_mdata(unsigned long offset)
 
 
 int mempipe_swapin_thread(void *data){
-	while(!kthread_should_stop()){
-		struct sysinfo i;
+	struct sysinfo i;
+	int err;
+        char path[256] = "/sbin/swapoff";
+        char *argv[] = { path, "/dev/vda5", NULL };
+       	char *envp[] = { "HOME=/", "TERM=linux", "PATH=/sbin:/usr/sbin:/bin:/usr/bin", NULL };
 
+
+	while(!kthread_should_stop()){
 		if(kthread_should_stop()){
 			break;	
 		}
 				
-		msleep(500);
+		msleep(1000);
 		si_meminfo(&i);
 		
-		if(gsis != NULL)
-			printk("pages used = %d, lowest bit = %d, highest bit = %d, next = %d, delta = %ld\n", gsis->inuse_pages, gsis->lowest_bit, gsis->highest_bit, gsis->cluster_next, gsis->disk_end - gsis->disk_start);	
+		if(swap_mounted == 1 && i.freeram > (gsis->disk_end - gsis->disk_start)){	
+			err = call_usermodehelper(path, argv, envp, 1);
+			if (err = 0) {
+				gsis->disk_end = gsis->disk_start = 0;
+				swap_mounted = 0;
+			}else{
+				printk("MemFlex error: call_usermodehelper\n");
+			}
+		}
 	}
-	
+
 	return 0;
 }
 
@@ -184,8 +193,6 @@ void (*end_write_func)(struct bio *, int))
 
 	m = (struct mdata *)((char *)sis->shm + offset*entry_size + PAGE_SIZE);
         m->exist = '0';
-	//mdata_exist = (char *)sis->shm + OFFSET_1*PAGE_SIZE + offset*sizeof(char);
-	//*mdata_exist = '0';
 
 #ifdef PROACTIVE_SWAP
         if(page->idx == 1) {
@@ -241,12 +248,16 @@ skip:
 	}
 	*/
 
+
 	memcpy((char *)sis->shm + shm_offset*entry_size, (char *)kmap(page), PAGE_SIZE);
 	kunmap(page);
         unlock_page(page);
 	if(offset > sis->disk_end) {
 		sis->disk_end = offset;
 	}
+
+	if(swap_mounted == 0)
+		swap_mounted = 1;
 
 	return ret;
 }

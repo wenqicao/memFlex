@@ -18,12 +18,9 @@
 //#define MY_ARRAY_SIZE 10000000
 //#define TOTAL_SWAP_SHM 262144*1 //maximum size of the shared memory used for swap
 //#define SWAP_SHM_SIZE 262144*1 //when to start dumping pages to the disk
-/*
 struct dump_args{
         unsigned long start, end;
-	struct swap_info_struct *sis;
 };
-*/
 
 struct mdata{
 	char exist;

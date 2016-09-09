@@ -1,1 +1,0 @@
-cmd_/home/qizhang/memFlex/core/memflex.ko := ld -r -m elf_x86_64 -T /usr/src/linux-3.14.4-memSwap/scripts/module-common.lds --build-id  -o /home/qizhang/memFlex/core/memflex.ko /home/qizhang/memFlex/core/memflex.o /home/qizhang/memFlex/core/memflex.mod.o
